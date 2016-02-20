@@ -1,4 +1,4 @@
-geo.lua - helper library for Redis geospatial indices
+geo.lua - helper library for Redis geospatial indices :earth_africa:
 ===
 
 This is a Lua library containing miscellaneous geospatial helper routines for use with [Redis](http://redis.io). It requires the [GEO API](http://redis.io/commands#geo), available from v3.2.
@@ -9,12 +9,12 @@ In broad strokes, the library provides:
 * GeoJSON [decoding](#GEOJSONADD) and [encoding](#GEOJSONENCODE)
 * A playground for testing experimental geospatial APIs
 
-The library is strictly metric, sorry.
+The library is strictly :straight_ruler: metric, sorry.
 ![Metric system adoption worldwide](https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Metric_system_adoption_map.svg/2000px-Metric_system_adoption_map.svg.png)
 
 Using geo.lua
 ---
-The library is an ordinary Redis Lua script -  use[`EVAL`](http://redis.io/commands/eval) or [`EVALSHA`](http://redis.io/commands/evalsha) to call it. The following example demonstrates usage from the prompt:
+The library is an ordinary Redis Lua script -  use [`EVAL`](http://redis.io/commands/eval) or [`EVALSHA`](http://redis.io/commands/evalsha) to call it. The following example demonstrates usage from the prompt:
 
 ````Bash
 $ redis-cli SCRIPT LOAD "$(cat geo.lua)"
@@ -132,13 +132,13 @@ Returns the distance between members.
 Perform cylinder-bound search.
 
 #### [TBD] GEOZCYLINDERBYMEMBER
-Perform cylinder-bound search by member (20-characters command!).
+Perform cylinder-bound search by member (a 20 characters command!).
 
 #### [TBD] GEOZSPHERE
 Useful for directing air traffic and impact research (bombs, comets).
 
 #### [TBD] GEOZCONE
-Good for comparing UFO sightings vis a vis cow abduction data.
+Good for comparing :alien: sightings vis a vis :cow: abduction data.
 
 ### Motility
 Storing each member's vector in an additional hash data structure, where the field is the member's name and the value is the serialized vector (bearing & velocity).
