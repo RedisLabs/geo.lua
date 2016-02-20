@@ -49,7 +49,7 @@ The length of a path between members.
 #### GEOPOLYGON KEYS[1] geoset ARGV[a] [WITHCOORD] ARGV[2] longitude1 3] latitude1 4] longitude2 5] latitude2 6] longitude3 7] latitude3 [...]
 > Time complexity: O(V+N+log(M)+N*V) where V is the number of vertices in the polygon, N is the number of elements inside the bounding box of the circular area delimited by center and radius of the polygon's bounding circle and M is the number of items inside the index.
 
-Search for members inside a simple polygon described by 3 or more coordinates. This command determines the polygon's center and farthest vertex from it to perform a `GEORADIUS`. The results are then filtered using a Point-In-Polygon (PIP) algorithm ([source](http://alienryderflex.com/polygon/)) that provides indeterminate results for members on the edges.
+Search for members inside a simple polygon described by 3 or more coordinates. This command determines the polygon's center and farthest vertex from it to perform a [`GEORADIUS`](http://redis.io/commands/georadius). The results are then filtered using a Point-In-Polygon (PIP) algorithm ([source](http://alienryderflex.com/polygon/)) that provides indeterminate results for members on the edges.
 
 **Return:** Array reply, specifically the members in the polygon.
 
@@ -172,6 +172,7 @@ If you encounter an issue while using the geo.lua library, please report it at t
 ### Pull request
 
 Code contributions to the geo.lua project can be made using pull requests. To submit a pull request:
+
 1. Fork this project.
 2. Make and commit your changes.
 3. Submit your changes as a pull request.
