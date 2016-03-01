@@ -1,5 +1,5 @@
 local _NAME = 'geo.lua'
-local _VERSION = '0.1.5'
+local _VERSION = '0.1.6'
 local _DESCRIPTION = 'A helper library for Redis geospatial indices'
 local _COPYRIGHT = '2016 Itamar Haber, Redis Labs'
 local _USAGE = [[
@@ -10,54 +10,53 @@ Call with ARGV[1] being one of the following commands:
   GEODEL        - delete a member
   GEOBEARING    - initial and final bearing between members
   GEOPATHLEN    - length of a path between members
-  GEOPOLYGON    - search inside a polygon
+  
+  - 2D geometries and polygon search -
+  GEOMETRYADD   - upsert a geometry to a polyhash
+  GEOMETRYGET   - returns coordinates and other stuff for polygons
+  GEOMETRYFILER - search geoset inside a geometry
     
   - GeoJSON -
-  GEOJSONADD    - add members to geoset from GeoJSON object
+  GEOJSONADD    - upsert members to geoset from GeoJSON object
   GEOJSONENCODE - return GeoJSON object for these GEO commands:
                   GEOHASH, GEOPOS, GEORADIUS[BYMEMBER] and
                   GEOPOLYGON
 
   - xyzsets (longitude, latitude & altitude) -
-  GEOZADD       - add member with altitude
+  GEOZADD       - upsert member with altitude
   GEOZREM       - remove member
   GEOZPOS       - the 3d position of members
   
   - location updates (credit @mattsta) -
   GEOTRACK      - positional updates notifications
 
-  help          - this text
+  help          - this text, for more information see the README file
 
 ]]
 
-local Geo = {}
+local Geo = {}      -- GEO library
 
 -- private
-Geo._TYPE_GEO = 1 -- regular geoset
-Geo._TYPE_XYZ = 2 -- xyzset
 
---- Keys validation
--- Extract and validate types of keys for command
--- @param geotype The type of command
--- @return geoset Key name
--- @return azset  Key name
-Geo._getcommandkeys = function (geotype)
-  
-  local function asserttype(k, t)
-    local r = redis.call('TYPE', k)
-    assert(r == t or r == 'none', 'WRONGTYPE Operation against a key holding the wrong kind of value')
-  end
-  
-  local geokey = assert(table.remove(KEYS, 1), 'No geoset key name provided')
-  asserttype(geokey, 'zset')
-  
-  if geotype == Geo._TYPE_XYZ then
-    local zsetkey = assert(table.remove(KEYS, 1), 'No altitude sorted set key name provided')
-    asserttype(zsetkey, 'zset')
-    return geokey, zsetkey
-  end
-  
-  return geokey
+-- Geospatial 2D Geometry
+local Geometry = {}
+Geometry.__index = Geometry
+
+setmetatable(Geometry, {
+              __call = function(cls, ...)
+                return cls.new(...)
+                end })
+
+Geometry._TYPES = { 'Point',           -- TODO
+                    'MultiPoint',      -- TODO
+                    'LineString',      -- TODO 
+                    'MultiLineString', -- TODO
+                    'Polygon',
+                    'MultiPolygon' }   -- TODO
+Geometry._TENUM = {}
+for i = 1, #Geometry._TYPES do
+  Geometry._TENUM[Geometry._TYPES[i]:upper()] = i
+  Geometry['_T' .. Geometry._TYPES[i]:upper()] = i
 end
 
 --- Calculates distance between two coordinates.
@@ -68,13 +67,260 @@ end
 -- @param lon2 The longitude of the 2nd coordinate
 -- @param lat2 The latitude of the 2nd coordinate
 -- @return distance The distance in meters
-Geo._distance = function (lon1, lat1, lon2, lat2)
+Geometry._distance = function (lon1, lat1, lon2, lat2)
   local R = 6372797.560856 -- Earth's, in meters
   local lon1r, lat1r, lon2r, lat2r = 
     math.rad(lon1), math.rad(lat1), math.rad(lon2), math.rad(lat2)
   local u = math.sin((lat2r - lat1r) / 2)
   local v = math.sin((lon2r - lon1r) / 2)
   return 2.0 * R * math.asin(math.sqrt(u * u + math.cos(lat1r) * math.cos(lat2r) * v * v))
+end
+
+--- Geometry constructor.
+-- Creates a geometry object.
+-- @param geomtype The geometry's type, optional
+-- @param ... The geometry's geometries
+-- @return self New Geometry object
+Geometry.new = function(geomtype, ...)
+  local self = setmetatable({}, Geometry)
+  self.geomtype = geomtype
+  self.coordn, self.coordx, self.coordy = {}, {}, {}
+  self.meta = {}
+  
+  if #arg > 0 then
+    if self.geomtype == Geometry._TPOLYGON then 
+      -- A polygon's coordinates are given by one or more LineRings
+      -- A LineRing is a LineString where the first and last vertices are identical
+      -- The first and mandatory ring is the polygon's outer ring
+      -- Any subsequent rings are considered holes, islands, and repeating...
+            
+      -- Polygon vertices are stored as two coordinate lists
+      -- When there's more than one ring, O means the (0,0) and the two lists:
+      --   begins with O
+      --   rings are delimeted with O
+      --   end with O
+      self.coordx[#self.coordx+1], self.coordy[#self.coordy+1] = 0, 0
+      for _, ring in ipairs(arg[1]) do
+        local n = #ring / 2
+        self.coordn[#self.coordn+1] = n
+        for i = 1, n do  
+          self.coordx[#self.coordx+1], self.coordy[#self.coordy+1] = ring[2*i-1], ring[2*i]
+        end
+        self.coordx[#self.coordx+1], self.coordy[#self.coordy+1] = 0, 0
+      end
+      
+      -- the outer ring
+      local op = 0                    -- outer perimeter
+      local ov = self.coordn[1]       -- number of vertices
+      local bbx1 = self.coordx[2]     -- bounding box
+      local bby1 = self.coordy[2]
+      local bbx2 = self.coordx[2]  
+      local bby2 = self.coordy[2]
+      local bbr = 0
+      local bcx, bcy, bcr = 0, 0, 0   -- bounding circle
+      -- traverse outer vertices
+      for i = 2, 1 + ov do
+        local ix, iy = self.coordx[i], self.coordy[i]
+        local jx, jy = self.coordx[i+1], self.coordy[i+1]
+        -- grow the outer perimeter
+        op = op + Geometry._distance(ix, iy, jx, jy)
+        -- add up for the averages
+        bcx = bcx + ix
+        bcy = bcy + iy
+        -- adjust bounding box if needed
+        if bbx1 > ix then
+          bbx1 = ix
+        elseif bbx2 < ix then
+          bbx2 = ix
+        end
+        if bby1 > iy then
+          bby1 = iy
+        elseif bby2 < iy then
+          bby2 = iy
+        end            
+      end
+      bcx = bcx / (ov - 1)
+      bcy = bcy / (ov - 1)
+      bbr = Geometry._distance(bbx1, bby1, bbx2, bby2) / 2
+  
+      -- farthest point from the centroid is the radius
+      for i = 2, 1 + ov do
+        local d = Geometry._distance(bcx, bcy, self.coordx[i], self.coordy[i])
+        if bcr < d then
+          bcr = d
+        end
+      end
+  
+      -- lets not be too accurate
+      bcr = math.ceil(bcr)
+      bbr = math.ceil(bbr)
+ 
+      self.meta = { op, ov, bcx, bcy, bcr, bbx1, bby1, bbx2, bby2, bbr }
+    else
+      error('Unknown argument(s) to for type')
+    end
+  end
+  
+  return self
+end
+
+--- Checks if a point is inside a polygon.
+-- https://www.ecse.rpi.edu/~wrf/Research/Short_Notes/pnpoly.html
+-- @param pt Point
+-- @param po Polygon
+-- @return boolean True if PIP
+function Geometry:PNPOLY(x, y)
+  local c = false
+  -- don't think outside the box
+  if self.meta[6]<=x and self.meta[8]>=x and self.meta[7]<=y and self.meta[9]>=y then
+    
+    local nvert = #self.coordy
+    local vertx = self.coordx
+    local verty = self.coordy
+    local testx = x
+    local testy = y
+    local j = nvert - 1
+    
+    for i = 1, nvert do
+      if  ((verty[i]>testy) ~= (verty[j]>testy)) and
+          testx < (vertx[j]-vertx[i]) * (testy-verty[i]) / (verty[j]-verty[i]) + vertx[i] then
+        c = not c
+      end
+      j = i
+    end
+  end
+
+  return c
+end
+
+--- Returns the bounding circle for a geometry.
+-- @return Table three elements: x, y and radius
+function Geometry:getBoundingCircle()
+  -- TODO: error on `Point`
+  return { self.meta[3], self.meta[4], self.meta[5] }
+end
+
+--- Returns the bounding box for a geometry.
+-- return Table five elements: min x and y, max x and y, radius
+function Geometry:getBoundingBox()
+  -- TODO: error on `Point`
+  return { self.meta[6], self.meta[7], self.meta[8], self.meta[9], self.meta[10] }
+end
+
+--- Returns the geometry's type name.
+-- @return name The geometry's name
+function Geometry:typeAsString()
+  return Geometry._TYPES[self.geomtype]
+end
+
+--- Returns a table of geometry's coordinates.
+-- Every geometry is a table, and in it every element is a vertex table.
+-- @return coord The coordinates as a table for a RESP reply
+function Geometry:coordAsRESP()
+  local reply = {}
+
+  local verti = 2
+  for geomi, geomn in ipairs(self.coordn) do
+    local r = {}
+    local vertn = verti + geomn - 1
+    for i = verti, vertn do
+      r[#r+1] = { tostring(self.coordx[i]), tostring(self.coordy[i]) }
+    end
+    verti = vertn + 2
+    reply[#reply+1] = r
+  end
+  
+  return reply
+end
+
+--- Returns a table of the geometry's meta information.
+-- @return meta The meta information
+function Geometry:metaAsRESP(subcmds)
+  local reply = {}
+  
+  if not subcmds or not subcmds['ANY'] then
+    return
+  end
+  if self.geomtype == Geometry._TPOLYGON then  
+    if subcmds['WITHPERIMETER'] then
+      reply[#reply+1] = tostring(self.meta[1])
+    end
+    if subcmds['WITHBOX'] then
+      local bbox = self:getBoundingBox()
+      reply[#reply+1] = { { tostring(bbox[1]), tostring(bbox[2]) },
+                          { tostring(bbox[3]), tostring(bbox[4]) },
+                          bbox[5]}
+    end
+    if subcmds['WITHCIRCLE'] then
+      local bcircle = self:getBoundingCircle()
+      reply[#reply+1] = { { tostring(bcircle[1]), tostring(bcircle[2]) },
+                          bcircle[3] }
+    end
+  end           
+  
+  if #reply > 0 then
+    return reply
+  else
+    return
+  end
+end
+
+--- Returns the msgpack-serialized geometry object.
+-- @return string The serialized object
+function Geometry:dump()
+  local payload = {}
+  payload[#payload+1] = self.geomtype
+  payload[#payload+1] = self.coordn
+  payload[#payload+1] = self.coordx
+  payload[#payload+1] = self.coordy
+  payload[#payload+1] = self.meta
+  return cmsgpack.pack(payload)
+end
+
+--- Loads the geometry from its serialized form.
+-- @param msgpack The serialized geometry
+-- @return null
+function Geometry:load(msgpack)
+  local payload = cmsgpack.unpack(msgpack)
+  self.geomtype = table.remove(payload, 1)
+  self.coordn = table.remove(payload, 1)
+  self.coordx = table.remove(payload, 1)
+  self.coordy = table.remove(payload, 1)
+  self.meta = table.remove(payload, 1)
+end
+
+-- Data structure type
+Geo._TYPE_GEO = 1     -- regular geoset
+Geo._TYPE_XYZ = 2     -- xyzset
+Geo._TYPE_GEOM = 3    -- geomash
+
+--- Keys validation.
+-- Extract and validate types of keys for command
+-- @param geotype The type of command
+-- @return geoset|polyhash Key name
+-- @return [azset]  Key name
+Geo._getcommandkeys = function (geotype)
+  
+  local function asserttype(k, t)
+    local r = redis.call('TYPE', k)
+    assert(r['ok'] == t or r['ok'] == 'none', 'WRONGTYPE Operation against a key holding the wrong kind of value')
+  end
+  
+  if geotype == Geo._TYPE_GEO then
+    local geokey = assert(table.remove(KEYS, 1), 'No geoset key name provided')
+    asserttype(geokey, 'zset')
+    return geokey
+  elseif geotype == Geo._TYPE_XYZ then
+    local geokey = assert(table.remove(KEYS, 1), 'No geoset key name provided')
+    asserttype(geokey, 'zset')
+    local zsetkey = assert(table.remove(KEYS, 1), 'No altitude sorted set key name provided')
+    asserttype(zsetkey, 'zset')
+    return geokey, zsetkey
+  elseif geotype == Geo._TYPE_GEOM then
+    local geomkey = assert(table.remove(KEYS, 1), 'No geomash key name provided')
+    asserttype(geomkey, 'hash')
+    return geomkey
+  end
 end
 
 -- public API
@@ -124,7 +370,7 @@ Geo.GEOPATHLEN = function()
     local curr = table.remove(ARGV, 1)
     local dist = redis.call('GEODIST', geokey, prev, curr, 'm')
     if dist then
-      total = total + dist    
+      total = total + dist
       prev = curr
     else
       return
@@ -134,83 +380,122 @@ Geo.GEOPATHLEN = function()
   return total
 end
 
---- Calculates the bounding circle for a set of coordinates.
--- @param v The coordinates table
--- @return clon The longitude of the circle's center
--- @return clat The latitude of the circle's center
--- @return radius The circle's radius 
-Geo._verticesboundingcircle = function(v)
-  local clon, clat = 0, 0 -- centroid longitude and latitude
-  local radius = 0.0
+--- Upserts a single geometry into a geomash.
+-- TODO: support more geometries besides an unholey `Polygon`
+-- TODO: support upsert of multiple geometries
+-- @return upserted Number 0 if updated, 1 if added
+Geo.GEOMETRYADD = function()
+  local geomkey = Geo._getcommandkeys(Geo._TYPE_GEOM)
+  local geomtype = assert(table.remove(ARGV, 1), 'Expecting a geometry type')
+  geomtype = geomtype:upper()
+  geomtype = assert(Geometry._TENUM[geomtype], 'Invalid geometry type')
+  local id = assert(table.remove(ARGV, 1), 'Expecting a geometry id')
   
-  -- the center is the average
-  local n = #v / 2
-  for i = 1, n do
-    clon = clon + v[2*i-1]
-    clat = clat + v[2*i]
+  assert(geomtype == Geometry._TPOLYGON, 'Sorry, atm only `POLYGON` geometry type is supported')
+  assert(#ARGV > 7, 'Expecting at least 4 coordinates')
+  assert(#ARGV % 2 == 0, 'Expecting an even number of arguments as coordinates')  
+  assert(ARGV[1] == ARGV[#ARGV-1] and ARGV[2] == ARGV[#ARGV], 'The first and last vertices must be the identical')
+  
+  local coord = {}
+  for i, v in ipairs(ARGV) do
+    coord[#coord+1] = assert(tonumber(v), 'Expecting numbers as coordinates')
   end
-  clon, clat = clon / n, clat / n
   
-  -- farthest point is the radius
-  for i = 1, n do
-    local d = Geo._distance(clon, clat, v[2*i-1], v[2*i])
-    if radius < d then
-      radius = d
-    end
-  end
-  radius = math.ceil(radius)
-  
-  return clon, clat, radius
+  local geom = Geometry.new(Geometry._TPOLYGON, { coord })
+  return redis.call('HSET', geomkey, id, geom:dump())
 end
 
---- Performs a search for members inside a simple polygon.
+--- Returns geometries from a geomash.
+-- @return vertices Table of vertices
+Geo.GEOMETRYGET = function()
+  local geomkey = Geo._getcommandkeys(Geo._TYPE_GEOM)
+  local subcmds = { WITHPERIMETER = false,
+                    WITHBOX = false,
+                    WITHCIRCLE = false }
+  assert(#ARGV > 0, 'Expecting at least one argument')
+  for i = 1, math.min(3, #ARGV) do
+    local s = ARGV[1]:upper()
+    -- there are edge cases this will not cover but good enough
+    if subcmds[s] ~= nil and not subcmds[s] then
+      subcmds['ANY'] = true
+      subcmds[s] = true
+      table.remove(ARGV, 1)
+    end
+  end  
+  
+  assert(#ARGV > 0, 'Expecting at least one geometry id')
+  
+  local r = redis.call('HMGET', geomkey, unpack(ARGV))
+  -- cast each geometry in the reply to RESP 
+  for ri, rv in ipairs(r) do
+    if rv then -- i.e. not (nil), meaning v is a geometry
+      local geom = Geometry.new()
+      geom:load(rv)
+      local rep = {} 
+      rep[#rep+1] = geom:typeAsString()
+      rep[#rep+1] = geom:coordAsRESP()
+      local meta = geom:metaAsRESP(subcmds)
+      if meta then rep[#rep+1]= meta end
+      r[ri] = rep
+    end
+  end
+  
+  return r
+end
+
+--- Performs a search for members inside a geometry.
 -- @return members Table with the members
-Geo.GEOPOLYGON = function ()
+Geo.GEOMETRYFILTER = function()
   local geokey = Geo._getcommandkeys(Geo._TYPE_GEO)
-  local wc = false
-  if ARGV[1]:upper() == "WITHCOORD" then
-    wc = true
-    table.remove(ARGV, 1)
+  local geomkey = Geo._getcommandkeys(Geo._TYPE_GEOM)
+  
+  assert(#ARGV > 0, 'Expecting at least one argument')
+  local subcmds = { WITHCOORD = false,
+                    STORE = false }
+  for i = 1, math.min(2, #ARGV) do
+    local s = ARGV[1]:upper()
+    -- there are edge cases this will not cover but good enough
+    if subcmds[s] ~= nil and not subcmds[s] then
+      subcmds[s] = true
+      table.remove(ARGV, 1)
+    end
+  end
+
+  local targetkey
+  if subcmds['STORE'] then
+    -- TODO: this currently triggers an ambiguous error 
+    targetkey = Geo._getcommandkeys(Geo._TYPE_GEO)
   end
   
-  for i, v in ipairs(ARGV) do
-    ARGV[i] = assert(tonumber(v), 'Expecting numbers as coordinates')
+  assert(#ARGV == 1, 'Expecting a single geometry id')
+  local r = assert(redis.call('HGET', geomkey, ARGV[1]), 'Geometry id not found: ' .. ARGV[1])
+  local geom = Geometry:new()
+  geom:load(r)
+  assert(geom.geomtype == Geometry._TPOLYGON, 'Unsupported (TODO) filter geometry: ' .. geom:typeAsString())
+  
+  local bbox = geom:getBoundingBox()
+  local members = redis.call('GEORADIUS', geokey, (bbox[1] + bbox[3]) / 2, (bbox[2] + bbox[4]) / 2, bbox[5], 'm', 'WITHCOORD')
+  local reply, geoadd = {}
+  for i, v in ipairs(members) do
+    if geom:PNPOLY(tonumber(v[2][1]), tonumber(v[2][2])) then
+      if subcmds['WITHCOORD'] then
+        reply[#reply+1] = v
+      else
+        reply[#reply+1] = v[1]
+      end
+      if subcmds['STORE'] then
+        geoadd[#geoadd+1] = v[2][1]
+        geoadd[#geoadd+1] = v[2][2]
+        geoadd[#geoadd+1] = v[1]
+      end  
+    end
   end
-  assert(#ARGV > 5, 'Expecting at least 3 coordinates')
-  assert(#ARGV % 2 == 0, 'Expecting an even number of arguments')
   
-  -- get the bounding circle and perform a radius search
-  local clon, clat, radius = Geo._verticesboundingcircle(ARGV)
-  local reply = redis.call('GEORADIUS', geokey, clon, clat, radius, 'm', 'WITHCOORD')
-  
-  -- filter members that are outside
-  local n = #ARGV / 2
-  for i, r in ipairs(reply) do
-    local j = n
-    local o = false
-    local x, y = tonumber(r[2][1]), tonumber(r[2][2])
-    
-    for k = 1, n do
-      if (ARGV[2*k]<y and ARGV[2*j]>=y
-        or ARGV[2*j]<y and ARGV[2*k]>=y)
-        and (ARGV[2*k-1]<=x or ARGV[2*j-1]<=x) then
-        if ARGV[2*k-1]+(y-ARGV[2*k])/(ARGV[2*j]-ARGV[2*k])*(ARGV[2*j-1]-ARGV[2*k-1])<x then
-          o = not o
-        end
-      end
-      j = k
-    end
-    
-    if o then -- in the polygon
-      if not wc then -- remove coordinates
-        reply[i] = reply[i][1]
-      end
-    else
-      reply[i] = nil
-    end
-  end        
-  
-  return reply
+  if subcmds['STORE'] then
+    return redis.call('GEOADD', targetkey, unpack(geoadd))
+  else
+    return reply
+  end
 end
 
 --- Adds members in a GeoJSON object to a geoset.
@@ -229,15 +514,42 @@ Geo.GEOJSONADD = function()
     assert(v['type'] == 'Feature', 'Expecting Feature as type, got ' .. v['type'])
     assert(v['geometry'], 'No feature geometry')
     assert(v['geometry']['type'] == 'Point', 'Feature geometry must be a Point')
-    local coords = assert(v['geometry']['coordinates'], 'No feature geometry coordinates provided')
-    assert(type(coords) == 'table' and #coords == 2, 'Feature geometry coordinates must consist of only 2 values: longitude and latitude')
-    geoadd[#geoadd+1] = assert(tonumber(coords[1], 'Longitude is NaN'))
-    geoadd[#geoadd+1] = assert(tonumber(coords[2], 'Latitude is NaN'))
+    local coord = assert(v['geometry']['coordinates'], 'No feature geometry coordinates provided')
+    assert(type(coord) == 'table' and #coord > 1, 'Feature geometry coordinates must consist at least 2 values: longitude and latitude')
+    geoadd[#geoadd+1] = coord[1]
+    geoadd[#geoadd+1] = coord[2]
     local id = assert(v['properties']['id'], 'No id provided for member')
     table.insert(geoadd, id)
   end
   
   return redis.call('GEOADD', geokey, unpack(geoadd))
+end
+
+--- Adds polygons in a GeoJSON object to a polyhash.
+-- Note: only the LineRing of the polygon.
+-- @return added The number of members added
+Geo.GEOJSONPOLYADD = function()
+  local polykey = Geo._getcommandkeys(Geo._TYPE_GEOM)
+  assert(#ARGV == 1, 'Expecting a single argument')
+  local geojson = assert(cjson.decode(table.remove(ARGV, 1)), 'Expecting a valid JSON object')
+  assert(geojson['type'], 'Expecting a valid GeoJSON object but got no type')
+  assert(geojson['type'] == 'FeatureCollection', 'Expecting a FeatureCollection, got ' .. geojson['type'])
+  assert(type(geojson['features']) == 'table', 'No features found in FeatureCollection')
+  
+  local polyadd = {}
+  for i, v in ipairs(geojson['features']) do
+    assert(v['type'], 'Expecting a valid GeoJSON object but got no type for feature')
+    assert(v['type'] == 'Feature', 'Expecting Feature as type, got ' .. v['type'])
+    local id = assert(v['properties']['id'], 'No id provided for member')    
+    assert(v['geometry'], 'No feature geometry')
+    assert(v['geometry']['type'] == 'Polygon', 'Feature geometry must be a Polygon, got ' .. v['geometry']['type'])
+    local coord = assert(v['geometry']['coordinates'][1], 'No feature geometry coordinates provided')
+    assert(type(coord) == 'table' and #coord > 2, 'Feature geometry coordinates must have at least 3 coordinates ' .. id)
+    local enc = Geo._polygonencode(coord)
+    polyadd[#polyadd+1] = { id, enc }
+  end
+  
+  return redis.call('HMSET', polykey, unpack(polyadd))
 end
 
 --- Encodes the output of GEO commands as GeoJSON object.
