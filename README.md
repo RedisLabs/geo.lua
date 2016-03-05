@@ -130,6 +130,7 @@ Encodes the reply of GEO commands as a GeoJSON object. Valid GEO commands are:
 * [`GEOHASH`]
 * [`GEOPOS`]
 * [`GEORADIUS`] and [`GEORADIUSBYMEMBER`]
+* [`GEOMETRYFILTER`]
 
 **Return:** String, specifically the reply of the GEO command encoded as a GeoJSON object.
 
