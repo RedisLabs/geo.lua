@@ -20,7 +20,7 @@ Call with ARGV[1] being one of the following commands:
   GEOJSONADD    - upsert members to geoset from GeoJSON object
   GEOJSONENCODE - return GeoJSON object for these GEO commands:
                   GEOHASH, GEOPOS, GEORADIUS[BYMEMBER] and
-                  GEOPOLYGON
+                  GEOMETRYFILTER
 
   - xyzsets (longitude, latitude & altitude) -
   GEOZADD       - upsert member with altitude
@@ -568,7 +568,7 @@ Geo.GEOJSONENCODE = function()
   local geojson = {type = 'FeatureCollection', features = {}}
   
   local r = {}
-  if geocmd == 'GEOPOS' or 'GEOHASH' then
+  if geocmd == 'GEOPOS' or geocmd == 'GEOHASH' then
     r = redis.call('GEOPOS', geokey, unpack(ARGV))
     for i, v in pairs(r) do
       if v then
@@ -588,15 +588,17 @@ Geo.GEOJSONENCODE = function()
   elseif geocmd == 'GEORADIUS' or geocmd == 'GEORADIUSBYMEMBER' then
     assert(subcmds['WITHCOORD'], geocmd .. ' must be called with WITHCOORD')
     r = redis.call(geocmd, geokey, unpack(ARGV))
-  elseif geocmd == 'GEOPOLYGON' then
+  elseif geocmd == 'GEOMETRYFILTER' then
     assert(subcmds['WITHCOORD'], geocmd .. ' must be called with WITHCOORD')
     -- return the geokey
     KEYS[#KEYS+1] = geokey
-    local r = Geo.GEOPOLYGON()  
+    -- return the geomash
+    KEYS[#KEYS+1] = table.remove(ARGV, 1)
+    r = Geo.GEOMETRYFILTER()
   else
     error('Unsupported command for GeoJSON encoding: ' .. geocmd)
   end
-  
+
   for _, feature in pairs(r) do
     local jf =  { type = 'Feature',
                   geometry = {
