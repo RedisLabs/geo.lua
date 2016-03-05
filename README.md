@@ -14,7 +14,7 @@ The library is strictly :straight_ruler: metric, sorry.
 
 Using geo.lua
 ---
-The library is an ordinary Redis Lua script -  use [`EVAL`] or [`EVALSHA`] to call it. The following example demonstrates usage from the prompt:
+The library is an ordinary Redis Lua script - use [`EVAL`] or [`EVALSHA`] to call it. The following example demonstrates usage from the prompt:
 
 ````Bash
 $ redis-cli SCRIPT LOAD "$(cat geo.lua)"
@@ -52,7 +52,7 @@ The length of a path between members.
 Delete members from a geoset.
 > Time complexity: O(M*log(N)) with N being the number of elements in the geoset and M the number of elements to be removed.
 
-This command is an alias for [`ZREM`] to disprove the [GEO incompleteness theorem](https://twitter.com/monadic/status/690889597866393600).  Technically it should be called `GEOREM` however.
+This command is an alias for [`ZREM`] to disprove the [GEO incompleteness theorem](https://twitter.com/monadic/status/690889597866393600). Technically it should be called `GEOREM` however.
 
 **Return:** Integer reply, specifically the number of members actually deleted.
 
@@ -71,7 +71,7 @@ Redis' geosets allow [storing](http://redis.io/commands/geoadd) (and [querying](
 
 <a name="GEOMETRYADD"></a>
 #### GEOMETRYADD KEYS[1] geomash ARGV[2] geometry-type 3] id 4..] <geometry data>
-Upsert a single geometry to a geomhash.
+Upsert a single geometry to a geomash.
 > Time complexity:
 
 `ARGV[4]` and above describe the geometry. Depending on the geometry's type:
@@ -103,7 +103,7 @@ The reply can be enriched with meta data about the geometry. The following sub-c
 Search for geoset members inside a geometry.
 > Time complexity:
 
-This command performs a [`GEORADIUS`] search that contains the geometry's bounding box. The results are then are then filtered using a Point-In-Polygon (PIP) algorithm ([source](https://www.ecse.rpi.edu/~wrf/Research/Short_Notes/pnpoly.html#The C Code)).
+This command performs a [`GEORADIUS`] search that contains the geometry's bounding box. The results are then filtered using a Point-In-Polygon (PIP) algorithm ([source](https://www.ecse.rpi.edu/~wrf/Research/Short_Notes/pnpoly.html#The C Code)).
 
 The following sub-commands are supported:
  * `STORE`: Stores the search results in the target geoset
@@ -112,7 +112,7 @@ The following sub-commands are supported:
 **Return:** Array reply, specifically the members and their coordinates (if called with `WITHCOORD`). When the `STORE` directive is used, the reply is an Integer that indicates the number of members that were upserted to the target geoset.
 
 ### GeoJSON
-A minimal implementation of the [spec's v1.0](http://geojson.org/geojson-spec.html) for decoding and encoding geoset and geomach members from/to `FeatureCollection`s and `Feature`s.
+A minimal implementation of the [spec's v1.0](http://geojson.org/geojson-spec.html) for decoding and encoding geoset and geomash members from/to `FeatureCollection`s and `Feature`s.
 
 <a name="GEOJSONADD"></a>
 #### GEOJSONADD KEYS[1] geoset 2] geomash ARGV[1] GeoJSON
@@ -120,7 +120,7 @@ A minimal implementation of the [spec's v1.0](http://geojson.org/geojson-spec.ht
 
 Upsert points to the geoset, other geometries to the geomash. A valid input GeoJSON object must be `FeatureCollection`. Each `Feature`'s type must be `Point` or a `Polygon`, and the feature's properties must include a member named `id`.
 
-**Return:** Integer reply, specifically the number of features  upserted.
+**Return:** Integer reply, specifically the number of features upserted.
 
 <a name="GEOJSONENCODE"></a>
 #### GEOJSONENCODE KEYS[1] geoset ARGV[2] <GEO command> 3] [arg] [...]
