@@ -179,7 +179,7 @@ function Geometry:PNPOLY(x, y)
     local verty = self.coordy
     local testx = x
     local testy = y
-    local j = nvert - 1
+    local j = nvert
     
     for i = 1, nvert do
       if  ((verty[i]>testy) ~= (verty[j]>testy)) and
